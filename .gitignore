@@ -79,3 +79,12 @@ Thumbs.db
 
 # Review Docs Script Cache
 create_review_doc.py
+
+# LLM Weights, GGUF Binaries & LoRA Adapters
+*.gguf
+phi-3.5-mini-lora/
+phi-3.5-mini-lora-merged/
+Homework/phi-3.5-mini-lora/
+Homework/phi-3.5-mini-lora-merged/
+llama.cpp/
+Homework/llama.cpp/

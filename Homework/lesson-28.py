@@ -13,102 +13,111 @@ from transformers import (
 
 from peft import LoraConfig, get_peft_model
 
+
 # Configuration
+
 MODEL_NAME = "microsoft/Phi-3.5-mini-instruct"
 DATA_PATH = "instruction-data.json"
 OUTPUT_DIR = "./phi-3.5-mini-lora"
 
 MAX_LENGTH = 512
 
+
 # Device
 
 if torch.cuda.is_available():
-    device="cuda"
+    device = "cuda"
 elif torch.backends.mps.is_available():
-    device="mps"
+    device = "mps"
 else:
-    device="cpu"
-    
+    device = "cpu"
+
 print("Using Device:", device)
 
 
-## Load Tokenizer
-print("Loading Tokenizer....")
+# Load Tokenizer
 
-tokenizer=AutoTokenizer.from_pretrained(MODEL_NAME)
+print("\nLoading Tokenizer...")
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 if tokenizer.pad_token is None:
-    tokenizer.pad_token=tokenizer.eos_token
-    
+    tokenizer.pad_token = tokenizer.eos_token
 
-### Load instruction dataset
 
-print("Loading Instruction Dataset...")
+# Load Instruction Dataset
+
+print("\nLoading Instruction Dataset...")
 
 with open(DATA_PATH, "r", encoding="utf-8") as f:
-    data=json.load(f)
-    
+    data = json.load(f)
+
 print("Number of examples:", len(data))
 
-dataset=Dataset.from_list(data)
+dataset = Dataset.from_list(data)
 
 print(dataset)
 
 
-### Chat Template Preprocessing
+# Chat Template Preprocessing
+
 def format_example(example):
-    messages=[
+
+    messages = [
         {
-            "role":"user",
-            "content":example["instruction"]
+            "role": "user",
+            "content": example["instruction"]
         }
     ]
-    
+
     if example.get("input"):
-        messages[0]["content"]+="\n"+example["input"]
-        
+        messages[0]["content"] += "\n" + example["input"]
+
     messages.append(
         {
-            "role":"assistant",
-            "content":example["output"]
+            "role": "assistant",
+            "content": example["output"]
         }
     )
-    
-    text=tokenizer.apply_chat_template(
+
+    text = tokenizer.apply_chat_template(
         messages,
-        tokenizer=False,
+        tokenize=False,
         add_generation_prompt=False
     )
-    
+
     return {
-        "text":text
+        "text": text
     }
-    
-print("Applying chat template...")
 
-dataset=dataset.map(format_example)
 
+print("\nApplying chat template...")
+
+dataset = dataset.map(format_example)
+
+print("\nExample formatted text:")
 print(dataset[0]["text"])
 
 
+# Tokenization
 
-### Tokenization
 def tokenize_function(example):
-    tokens=tokenizer(
+
+    tokens = tokenizer(
         example["text"],
         truncation=True,
         max_length=MAX_LENGTH,
         padding=False
     )
-    
-    tokens["labels"]=tokens["input_ids"].copy()
-    
+
+    tokens["labels"] = tokens["input_ids"].copy()
+
     return tokens
 
 
-print("Tokenizing Dataset....")
+print("\nTokenizing Dataset...")
 
-tokenized_dataset=dataset.map(
+tokenized_dataset = dataset.map(
     tokenize_function,
     remove_columns=dataset.column_names
 )
@@ -116,21 +125,26 @@ tokenized_dataset=dataset.map(
 print(tokenized_dataset)
 
 
-### Load pretrained model
-print("Loading pretrained model...")
+# Load Pretrained Model
 
-model=AutoModelForCausalLM.from_pretrained(
+print("\nLoading pretrained model...")
+
+model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.float16 if device!="cpu" else torch.float32
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
 )
 
-model.config.pad_token_id=tokenizer.pad_token_id
+model.config.pad_token_id = tokenizer.pad_token_id
 
 
-### Parameters Before LoRA
-total_params=sum(p.numel() for p in model.parameters())
+# Parameters Before LoRA
 
-trainable_params_before=sum(
+total_params = sum(
+    p.numel()
+    for p in model.parameters()
+)
+
+trainable_params_before = sum(
     p.numel()
     for p in model.parameters()
     if p.requires_grad
@@ -141,44 +155,49 @@ print("Total parameters:", total_params)
 print("Trainable parameters:", trainable_params_before)
 
 
+# LoRA Configuration
 
-### LoRA configuration
-lora_config=LoraConfig(
-    r=8, 
+lora_config = LoraConfig(
+    r=8,
     lora_alpha=16,
     lora_dropout=0.05,
-    
+
     target_modules=[
-        "q_proj",
-        "v_proj"
+        "qkv_proj",
+        "o_proj"
     ],
+
     bias="none",
     task_type="CAUSAL_LM"
 )
 
 
-## Apply LoRA adapters
+# Apply LoRA
+
 print("\nApplying LoRA...")
 
-model=get_peft_model(
-    model, lora_config
+model = get_peft_model(
+    model,
+    lora_config
 )
 
-## Show trainable parameters
-print("\nAfter LoRA:")
+print("\nLoRA parameter statistics:")
 
 model.print_trainable_parameters()
 
-### Data collator
-data_collator=DataCollatorForSeq2Seq(
+
+# Data Collator
+
+data_collator = DataCollatorForSeq2Seq(
     tokenizer=tokenizer,
     model=model,
     padding=True
 )
 
 
-### Training agruments
-training_args=TrainingArguments(
+# Training Arguments
+
+training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
 
     num_train_epochs=3,
@@ -189,34 +208,43 @@ training_args=TrainingArguments(
     learning_rate=2e-4,
 
     logging_steps=10,
+
     save_strategy="epoch",
 
-    fp16=torch.cuda.is_available(),
+    fp16=True if device == "cuda" else False,
 
-    report_to="none"
+    report_to="none",
+
+    remove_unused_columns=False
 )
 
 
-### Trainer
-trainer=Trainer(
+# Trainer
+
+trainer = Trainer(
     model=model,
     args=training_args,
+
     train_dataset=tokenized_dataset,
+
     data_collator=data_collator
 )
 
 
-### Train
+# Train
+
 print("\nStarting LoRA fine-tuning...")
 
 trainer.train()
 
 
-## Save LoRA adapter
+# Save LoRA Adapter
+
 print("\nSaving LoRA adapter...")
 
 model.save_pretrained(OUTPUT_DIR)
+
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-print("LoRA adapter saved to:", OUTPUT_DIR)
-
+print("\nLoRA adapter saved to:")
+print(OUTPUT_DIR)
